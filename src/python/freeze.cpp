@@ -445,6 +445,13 @@ void FlatVariables::schedule_jit_variables(
 
         if (info.state == VarState::Literal) {
             // Special case, where the variable is a literal.
+            if (info.type == VarType::Pointer)
+                // A pointer literal (see jit_var_pointer()) holds a raw
+                // address whose referenced storage may move between replays.
+                // Baking it into the recording would be unsafe.
+                jit_raise("freeze(): pointer literals cannot be frozen "
+                          "function inputs!");
+
             layout_.literal = info.literal;
             // Store size in index variable, as this is not used for literals.
             layout_.literal_size  = (uint32_t) info.size;
@@ -487,11 +494,14 @@ void FlatVariables::record_jit_variables() {
         VarLayout &layout_ = var_layout[i];
 
         VarInfo info = jit_var_info(index);
-        if (info.type == VarType::Pointer) {
-            // We do not support pointers as inputs. It might be possible with
-            // some extra handling, but they are never used directly.
-            jit_raise("Pointer inputs not supported!");
-        }
+
+        /* Note: evaluated pointer arrays (e.g. the page tables used by
+           drjit/paged.h) are legal inputs. They are ordinary buffers whose
+           contents are read at run time, so replaying with an updated
+           table works like any other buffer input. The caller must ensure
+           that the referenced storage stays alive, as with any use of
+           jit_var_gather_ptr(). Pointer literals are rejected earlier
+           (see schedule_jit_variables()). */
 
         layout_.vs         = info.state;
         layout_.vt         = info.type;

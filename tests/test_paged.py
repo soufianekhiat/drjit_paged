@@ -382,3 +382,20 @@ def test15_lifetime_stress(t):
     gc.collect()
     assert pkg.jit_ref_count(shared_page) == baseline
 
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test16_freeze_replay(t):
+    pkg = get_pkg(t)
+    UInt32 = sys.modules[t.__module__].UInt32
+
+    holder = pkg.PagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    idx = dr.arange(UInt32, 8)
+
+    @dr.freeze
+    def func(holder, idx):
+        return pkg.gather_holder(holder, idx)
+
+    # Record
+    r1 = func(holder, idx)
+    assert dr.all(r1 == t(1, 2, 3, 4, 5, 6, 7, 8))
+    assert func.n_recordings == 1
