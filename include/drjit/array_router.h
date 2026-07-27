@@ -986,7 +986,8 @@ Target gather(Source &&source, const Index &index, const Mask &mask_ = true,
     mask_t<plain_t<Index>> mask = mask_;
     DRJIT_MARK_USED(mask);
     if constexpr (detail::is_paged_array_view_v<Source>) {
-        // Case 0: gather<FloatC>(const PagedArrayView<FloatC>&, ...)
+        // Case 0: gather<FloatC>(const PagedArrayView<FloatC>&, ...) or
+        //         gather<FloatD>(const DiffPagedArrayView<FloatD>&, ...)
         // Read through a table of page pointers (see drjit/paged.h)
         return source.template gather_<Target>(index, mask, mode);
     } else if constexpr (depth_v<Source> > 1) {

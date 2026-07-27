@@ -249,6 +249,9 @@ template <typename Value_, size_t Dimension_> class Texture;
 /// Read-only view of an array split into separately allocated pages
 template <typename Array_> class PagedArrayView;
 
+/// Differentiable view of an array with paged primal storage
+template <typename Array_> class DiffPagedArrayView;
+
 /// Helper class for custom data structures
 template <typename T>
 struct struct_support;
@@ -272,8 +275,10 @@ namespace detail {
     template <typename T> struct is_paged_array_view : std::false_type { };
     template <typename T>
     struct is_paged_array_view<PagedArrayView<T>> : std::true_type { };
+    template <typename T>
+    struct is_paged_array_view<DiffPagedArrayView<T>> : std::true_type { };
 
-    /// Is 'T' a drjit::PagedArrayView<...> instance?
+    /// Is 'T' a drjit::PagedArrayView / drjit::DiffPagedArrayView instance?
     template <typename T> constexpr bool is_paged_array_view_v =
         is_paged_array_view<std::decay_t<T>>::value;
 }

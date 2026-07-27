@@ -357,4 +357,158 @@ private:
     uint32_t m_page_mask = 0;
 };
 
+/**
+ * \brief Differentiable view of an array with paged primal storage
+ *
+ * DiffPagedArrayView augments a read-only PagedArrayView with a single
+ * *logical* AD identity: from the perspective of automatic differentiation,
+ * the paged input is one differentiable array of ``logical_size`` entries.
+ * The pages are only how this array is read during primal execution; page
+ * boundaries and physical page sharing have no differentiation semantics.
+ *
+ * This is realized through a *logical proxy*, a differentiable array of the
+ * logical width whose primal contents are never read (they remain a literal
+ * zero). Reads via dr::gather() combine
+ *
+ * - a primal gather through the paged storage, and
+ * - the AD edge of an ordinary gather from the logical proxy.
+ *
+ * The resulting derivatives are those of a contiguous logical array:
+ *
+ * - forward mode gathers from the proxy's tangent by logical index;
+ * - reverse mode scatter-adds adjoints into the proxy's gradient by
+ *   logical index (repeated indices accumulate).
+ *
+ * Consequently, gradients are indexed by logical position: two logical
+ * ranges that share the same physical page still receive separate gradient
+ * entries, and interpolation across a page boundary differentiates exactly
+ * like any other pair of adjacent indices.
+ *
+ * Typical use:
+ *
+ *     DiffPagedArrayView<Float> values(pages, page_count, n, page_size);
+ *     dr::enable_grad(values.logical_proxy());
+ *
+ *     Float y = dr::gather<Float>(values, index, active);
+ *     dr::backward(loss(y));
+ *
+ *     Float dx = dr::grad(values.logical_proxy()); // one logical gradient
+ *
+ * Tangents and gradients use contiguous storage of the logical width; only
+ * the primal is paged. Replacing pages (see \ref update_page()) does not
+ * change the AD identity, and derivative propagation never reads the pages,
+ * so gradients always correspond to the snapshot that produced the primal.
+ */
+template <typename Array_> class DiffPagedArrayView {
+public:
+    using Array    = Array_;
+    using Detached = detached_t<Array>;
+    using Primal   = PagedArrayView<Detached>;
+    using Index    = uint32_array_t<Detached>;
+    using Mask     = mask_t<Detached>;
+
+    static_assert(is_diff_v<Array> && depth_v<Array> == 1 && !is_tensor_v<Array>,
+                  "DiffPagedArrayView<T>: 'T' must be a flat differentiable "
+                  "array type (e.g. drjit::DiffArray<JitBackend::CUDA, float>)!");
+
+    DiffPagedArrayView() = default;
+
+    /// Wrap an existing primal view
+    explicit DiffPagedArrayView(const Primal &primal)
+        : m_primal(primal), m_proxy(make_proxy(primal.size())) { }
+
+    DiffPagedArrayView(const Detached *pages, size_t page_count,
+                       size_t logical_size, size_t page_size)
+        : m_primal(pages, page_count, logical_size, page_size),
+          m_proxy(make_proxy(logical_size)) { }
+
+    DiffPagedArrayView(const std::vector<Detached> &pages, size_t logical_size,
+                       size_t page_size)
+        : m_primal(pages, logical_size, page_size),
+          m_proxy(make_proxy(logical_size)) { }
+
+    /// Number of entries of the logical array
+    size_t size() const { return m_primal.size(); }
+
+    /// The underlying read-only paged view
+    const Primal &primal() const { return m_primal; }
+    Primal &primal() { return m_primal; }
+
+    /**
+     * \brief The logical AD identity of this view
+     *
+     * Enable gradient tracking on this array to make reads differentiable;
+     * its gradient represents the one logical array (never individual
+     * pages). Its primal contents are unused.
+     */
+    Array &logical_proxy() { return m_proxy; }
+    const Array &logical_proxy() const { return m_proxy; }
+
+    /// Replace a single page (see PagedArrayView::update_page()). The
+    /// logical AD identity is unaffected.
+    void update_page(size_t page_index, const Detached &new_page) {
+        m_primal.update_page(page_index, new_page);
+    }
+
+    /// Implementation of dr::gather() for differentiable paged sources
+    template <typename Target, typename Index2, typename Mask2>
+    Target gather_(const Index2 &index_, const Mask2 &mask_,
+                   ReduceMode mode) const {
+        if constexpr (depth_v<Target> > 1) {
+            static_assert(size_v<Target> != Dynamic,
+                          "gather(): dynamically sized target types are not "
+                          "supported when gathering from a "
+                          "DiffPagedArrayView!");
+
+            using Entry = value_t<Target>;
+            constexpr uint32_t N = (uint32_t) size_v<Target>;
+
+            Index index(detach<false>(index_));
+            Target result;
+            for (uint32_t i = 0; i < N; ++i)
+                result.entry(i) = gather_<Entry>(
+                    fmadd(index, Index(N), Index(i)), mask_, mode);
+            return result;
+        } else {
+            static_assert(std::is_same_v<Target, Array>,
+                          "gather(): the target type must match the array "
+                          "type underlying the DiffPagedArrayView!");
+
+            /* Indices and masks are not differentiable quantities */
+            Index index = Index(detach<false>(index_));
+            Mask mask   = Mask(detach<false>(mask_));
+
+            /* Primal read through the paged storage */
+            Detached primal =
+                drjit::gather<Detached>(m_primal, index, mask, mode);
+
+            if (!grad_enabled(m_proxy))
+                return Target(primal);
+
+            /* Differentiable read of the logical proxy. Its primal content
+               (a literal zero) is discarded by replace_grad() below; the
+               operation only contributes the AD edge, whose forward
+               derivative gathers from the logical tangent, and whose
+               reverse derivative scatter-adds into the logical gradient. */
+            using DiffIndex = uint32_array_t<Array>;
+            using DiffMask  = mask_t<Array>;
+            Target wired = drjit::gather<Target>(m_proxy, DiffIndex(index),
+                                                 DiffMask(mask), mode);
+
+            return replace_grad(Target(primal), wired);
+        }
+    }
+
+private:
+    static Array make_proxy(size_t size) {
+        return size ? zeros<Array>(size) : Array();
+    }
+
+    /// Read-only paged primal storage
+    Primal m_primal;
+
+    /// One logical AD identity of the logical width
+    Array m_proxy;
+};
+
 NAMESPACE_END(drjit)
