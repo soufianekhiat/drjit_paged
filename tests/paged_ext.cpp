@@ -2,6 +2,7 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/tuple.h>
 #include <drjit/python.h>
+#include <drjit/autodiff.h>
 #include <drjit/paged.h>
 #include <drjit/traversable_base.h>
 
@@ -50,13 +51,55 @@ private:
     dr::PagedArrayView<Float> m_view;
 };
 
+/// Traversable wrapper around DiffPagedArrayView (see PagedHolder)
+template <JitBackend Backend>
+class DiffPagedHolder : public dr::TraversableBase {
+public:
+    using Float     = dr::JitArray<Backend, float>;
+    using DiffFloat = dr::DiffArray<Backend, float>;
+    using View      = dr::DiffPagedArrayView<DiffFloat>;
+
+    DiffPagedHolder() = default;
+    DiffPagedHolder(const std::vector<Float> &pages, size_t logical_size,
+                    size_t page_size)
+        : m_view(pages, logical_size, page_size) { }
+
+    View &view() { return m_view; }
+    const View &view() const { return m_view; }
+
+    void traverse_1_cb_ro(void *payload,
+                          dr::detail::traverse_callback_ro fn) const override {
+        const auto &primal = m_view.primal();
+        for (const Float &page : primal.pages())
+            dr::traverse_1_fn_ro(page, payload, fn);
+        dr::traverse_1_fn_ro(primal.page_table(), payload, fn);
+        dr::traverse_1_fn_ro(m_view.logical_proxy(), payload, fn);
+    }
+
+    void traverse_1_cb_rw(void *payload,
+                          dr::detail::traverse_callback_rw fn) override {
+        using Access = dr::detail::paged_array_view_access<Float>;
+        auto &primal = m_view.primal();
+        for (Float &page : Access::pages(primal))
+            dr::traverse_1_fn_rw(page, payload, fn);
+        dr::traverse_1_fn_rw(Access::page_table(primal), payload, fn);
+        dr::traverse_1_fn_rw(m_view.logical_proxy(), payload, fn);
+    }
+
+private:
+    View m_view;
+};
+
 template <JitBackend Backend> void bind(nb::module_ m) {
-    using Float  = dr::JitArray<Backend, float>;
-    using UInt32 = dr::JitArray<Backend, uint32_t>;
-    using Mask   = dr::mask_t<Float>;
-    using Float3 = dr::Array<Float, 3>;
-    using View   = dr::PagedArrayView<Float>;
-    using Holder = PagedHolder<Backend>;
+    using Float      = dr::JitArray<Backend, float>;
+    using UInt32     = dr::JitArray<Backend, uint32_t>;
+    using Mask       = dr::mask_t<Float>;
+    using Float3     = dr::Array<Float, 3>;
+    using View       = dr::PagedArrayView<Float>;
+    using Holder     = PagedHolder<Backend>;
+    using DiffFloat  = dr::DiffArray<Backend, float>;
+    using DiffView   = dr::DiffPagedArrayView<DiffFloat>;
+    using DiffHolder = DiffPagedHolder<Backend>;
 
     nb::class_<View>(m, "PagedArrayViewF32")
         .def(nb::init<>())
@@ -103,6 +146,66 @@ template <JitBackend Backend> void bind(nb::module_ m) {
 
     m.def("gather_holder", [](const Holder &holder, const UInt32 &index) {
         return dr::gather<Float>(holder.view(), index);
+    }, "holder"_a, "index"_a);
+
+    nb::class_<DiffView>(m, "DiffPagedArrayViewF32")
+        .def(nb::init<>())
+        .def(nb::init<const std::vector<Float> &, size_t, size_t>(),
+             "pages"_a, "logical_size"_a, "page_size"_a)
+        .def("size", &DiffView::size)
+        .def("update_page", &DiffView::update_page)
+        .def("enable_grad",
+             [](DiffView &v) { dr::enable_grad(v.logical_proxy()); })
+        .def("grad_enabled",
+             [](DiffView &v) { return dr::grad_enabled(v.logical_proxy()); })
+        .def("proxy", [](DiffView &v) { return v.logical_proxy(); })
+        .def("grad", [](DiffView &v) {
+            return dr::grad(v.logical_proxy());
+        })
+        .def("set_grad", [](DiffView &v, const Float &value) {
+            dr::set_grad(v.logical_proxy(), value);
+        })
+        .def("clear_grad", [](DiffView &v) {
+            dr::clear_grad(v.logical_proxy());
+        });
+
+    m.def("gather_diff", [](const DiffView &view, const UInt32 &index,
+                            const Mask &active) {
+        return dr::gather<DiffFloat>(view, index, active);
+    }, "view"_a, "index"_a, "active"_a);
+
+    m.def("gather_diff", [](const DiffView &view, const UInt32 &index) {
+        return dr::gather<DiffFloat>(view, index);
+    }, "view"_a, "index"_a);
+
+    auto diff_holder = nb::class_<DiffHolder>(
+        m, "DiffPagedHolderF32",
+        nb::intrusive_ptr<DiffHolder>(
+            [](DiffHolder *o, PyObject *po) noexcept { o->set_self_py(po); }))
+        .def(nb::init<>())
+        .def(nb::init<const std::vector<Float> &, size_t, size_t>(),
+             "pages"_a, "logical_size"_a, "page_size"_a)
+        .def("size", [](const DiffHolder &h) { return h.view().size(); })
+        .def("update_page", [](DiffHolder &h, size_t i, const Float &page) {
+            h.view().update_page(i, page);
+        })
+        .def("enable_grad", [](DiffHolder &h) {
+            dr::enable_grad(h.view().logical_proxy());
+        })
+        .def("grad", [](DiffHolder &h) {
+            return dr::grad(h.view().logical_proxy());
+        })
+        .def("set_grad", [](DiffHolder &h, const Float &value) {
+            dr::set_grad(h.view().logical_proxy(), value);
+        })
+        .def("clear_grad", [](DiffHolder &h) {
+            dr::clear_grad(h.view().logical_proxy());
+        });
+
+    dr::bind_traverse(diff_holder);
+
+    m.def("gather_diff_holder", [](const DiffHolder &holder, const UInt32 &index) {
+        return dr::gather<DiffFloat>(holder.view(), index);
     }, "holder"_a, "index"_a);
 }
 
