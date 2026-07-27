@@ -29,8 +29,11 @@ DrJit 1.5.0 (unreleased)
   gradient. Page boundaries and physical page sharing are therefore
   invisible to automatic differentiation: interpolation across a page
   boundary differentiates exactly like any other pair of adjacent indices,
-  and optimizers see one parameter of the logical width rather than
-  per-page variables.
+  and the logical gradient is one array of the logical width rather than
+  per-page variables. Each view is an immutable snapshot bound to one AD
+  identity; the internal AD proxy is a derivative carrier (tangent and
+  adjoint state only), not a mutable parameter, and the host applies
+  updates to its own storage before constructing the next snapshot.
 
 - Added :py:func:`dr.median() <median>`, which computes the median along one
   or more axes.

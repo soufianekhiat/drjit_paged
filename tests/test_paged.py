@@ -400,6 +400,18 @@ def test16_freeze_replay(t):
     assert dr.all(r1 == t(1, 2, 3, 4, 5, 6, 7, 8))
     assert func.n_recordings == 1
 
+    # Replay with unchanged inputs
+    r2 = func(holder, idx)
+    assert dr.all(r2 == t(1, 2, 3, 4, 5, 6, 7, 8))
+    assert func.n_recordings == 1
+
+    # Replace a page: the replay must read the new values through the
+    # updated pointer table, without retracing
+    holder.update_page(0, t(10, 20, 30, 40))
+    r3 = func(holder, idx)
+    assert dr.all(r3 == t(10, 20, 30, 40, 5, 6, 7, 8))
+    assert func.n_recordings == 1
+
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
 def test17_diff_jvp_basic(t):
@@ -410,7 +422,7 @@ def test17_diff_jvp_basic(t):
 
     dv = pkg.DiffPagedArrayViewF32([t(1, 2, 3), t(4, 5, 6), t(7, 8)], 8, 3)
     dv.enable_grad()
-    dv.set_grad(t(10, 20, 30, 40, 50, 60, 70, 80))
+    dv.set_tangent(t(10, 20, 30, 40, 50, 60, 70, 80))
 
     y = pkg.gather_diff(dv, UInt32(2, 3, 5, 6))
     assert dr.all(dr.detach(y) == m.ad.Float(3, 4, 6, 7))
@@ -432,14 +444,14 @@ def test18_diff_vjp_basic(t):
     y = pkg.gather_diff(dv, UInt32(2, 3, 5, 6))
     w = m.ad.Float(1, 2, 3, 4)
     dr.backward(dr.sum(y * w))
-    assert dr.all(dv.grad() == t(0, 0, 1, 2, 0, 3, 4, 0))
+    assert dr.all(dv.gradient() == t(0, 0, 1, 2, 0, 3, 4, 0))
 
     # Repeated indices accumulate
-    dv.clear_grad()
+    dv.clear_gradient()
     y = pkg.gather_diff(dv, UInt32(3, 3, 3))
     w = m.ad.Float(1, 2, 4)
     dr.backward(dr.sum(y * w))
-    assert dr.all(dv.grad() == t(0, 0, 0, 7, 0, 0, 0, 0))
+    assert dr.all(dv.gradient() == t(0, 0, 0, 7, 0, 0, 0, 0))
 
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
@@ -463,7 +475,7 @@ def test19_diff_shared_physical_page(t):
     dr.backward(dr.sum(y * w))
 
     # Gradients must not collapse despite identical physical pointers
-    assert dr.all(dv.grad() == t(0, 10, 0, 0, 0, 20, 0, 0))
+    assert dr.all(dv.gradient() == t(0, 10, 0, 0, 0, 20, 0, 0))
 
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
@@ -491,7 +503,7 @@ def test20_diff_lerp_page_boundary(t):
     dv.enable_grad()
     y = lerp_result(dv)
     dr.backward(y)
-    g = dv.grad()
+    g = dv.gradient()
     expected = [0.0] * 8
     expected[k] = 1 - a
     expected[k + 1] = a
@@ -503,7 +515,7 @@ def test20_diff_lerp_page_boundary(t):
     tangent = [0.0] * 8
     tangent[k] = 1.0
     tangent[k + 1] = 1.0
-    dv2.set_grad(t(tangent))
+    dv2.set_tangent(t(tangent))
     y2 = lerp_result(dv2)
     dr.forward_to(y2)
     assert dr.allclose(dr.grad(y2), 1.0)  # (1 - a) + a
@@ -562,7 +574,7 @@ def test21_diff_bilinear_page_boundary(t):
     dv.enable_grad()
     r = sample(dv)
     dr.backward(r)
-    g = dv.grad()
+    g = dv.gradient()
 
     expected = [0.0] * 16
     expected[idx['i00']] = w00
@@ -621,12 +633,12 @@ def test22_diff_trilinear_page_boundary(t):
     dv.enable_grad()
     r = sample(dv)
     dr.backward(r)
-    assert dr.allclose(dv.grad(), t(weights))
+    assert dr.allclose(dv.gradient(), t(weights))
 
     # Forward mode: tangent of all ones gives the sum of the weights (1.0)
     dv2 = make(grid)
     dv2.enable_grad()
-    dv2.set_grad(dr.full(t, 1.0, 8))
+    dv2.set_tangent(dr.full(t, 1.0, 8))
     r2 = sample(dv2)
     dr.forward_to(r2)
     assert dr.allclose(dr.grad(r2), 1.0)
@@ -658,7 +670,7 @@ def test23_diff_triangle_interpolation(t):
     expected[i0] = b0
     expected[i1] = b1
     expected[i2] = b2
-    assert dr.allclose(dv.grad(), t(expected))
+    assert dr.allclose(dv.gradient(), t(expected))
 
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
@@ -682,7 +694,7 @@ def test24_diff_dot_identity(t):
     # J v (forward mode)
     dv = pkg.DiffPagedArrayViewF32(pages, n, page_size)
     dv.enable_grad()
-    dv.set_grad(t(v))
+    dv.set_tangent(t(v))
     y = pkg.gather_diff(dv, UInt32(indices))
     dr.forward_to(y)
     lhs = dr.sum(dr.grad(y) * t(w))
@@ -692,53 +704,63 @@ def test24_diff_dot_identity(t):
     dv2.enable_grad()
     y2 = pkg.gather_diff(dv2, UInt32(indices))
     dr.backward(dr.sum(y2 * m.ad.Float(w)))
-    rhs = dr.sum(dv2.grad() * t(v))
+    rhs = dr.sum(dv2.gradient() * t(v))
 
     assert dr.allclose(lhs, rhs)
 
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
 def test25_diff_snapshot_replacement(t):
-    # Spec 19.10: forward uses snapshot A; the pages are then replaced; the
-    # backward pass of the old result must correspond to snapshot A
+    # Spec 19.10: forward uses snapshot A; a second snapshot is then
+    # created; the backward pass of the old result must correspond to
+    # snapshot A. The loss is nonlinear so that the gradient depends on
+    # the primal values (d/dx of x^2 = 2 x).
     pkg = get_pkg(t)
     m = sys.modules[t.__module__]
     UInt32 = m.UInt32
 
-    dv = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
-    dv.enable_grad()
+    dv_a = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    dv_a.enable_grad()
 
     idx = UInt32(3, 4)
-    y = pkg.gather_diff(dv, idx)  # unevaluated, uses snapshot A
+    y = pkg.gather_diff(dv_a, idx)     # unevaluated, uses snapshot A
+    loss = dr.sum(y * y)
 
-    # Replace both pages (snapshot B)
-    dv.update_page(0, t(10, 20, 30, 40))
-    dv.update_page(1, t(50, 60, 70, 80))
+    # A DiffPagedArrayView is an immutable snapshot: new page values mean
+    # a new view with a fresh AD identity
+    dv_b = pkg.DiffPagedArrayViewF32([t(10, 20, 30, 40), t(50, 60, 70, 80)], 8, 4)
+    dv_b.enable_grad()
 
-    # The old expression still reads snapshot A
-    dr.backward(dr.sum(y * m.ad.Float(2, 3)))
+    # The old expression still reads snapshot A, and its gradient uses
+    # snapshot A values: d(y^2)/dX = 2 * [4, 5] = [8, 10]
+    dr.backward(loss)
     assert dr.all(dr.detach(y) == m.ad.Float(4, 5))
+    assert dr.all(dv_a.gradient() == t(0, 0, 0, 8, 10, 0, 0, 0))
 
-    # Gradients route to the logical indices (page-independent)
-    assert dr.all(dv.grad() == t(0, 0, 0, 2, 3, 0, 0, 0))
-
-    # A new gather reads snapshot B
-    y2 = pkg.gather_diff(dv, idx)
+    # Snapshot B is independent: values and gradients
+    y2 = pkg.gather_diff(dv_b, idx)
+    dr.backward(dr.sum(y2 * y2))
     assert dr.all(dr.detach(y2) == m.ad.Float(40, 50))
+    assert dr.all(dv_b.gradient() == t(0, 0, 0, 80, 100, 0, 0, 0))
+    assert dr.all(dv_a.gradient() == t(0, 0, 0, 8, 10, 0, 0, 0))
 
 
 @pytest.test_arrays('float32,shape=(*),jit,-diff')
 def test26_diff_freeze_replay(t):
-    # Spec 21: frozen primal, JVP, and VJP must replay after page
-    # replacement, reading the new values without retracing
+    # Spec 21: frozen primal, JVP, and VJP must replay after snapshot
+    # rebinding, reading the new values without retracing. The functions
+    # are nonlinear so that replayed derivatives depend on the new paged
+    # primal values (a stale page table would produce stale gradients).
     pkg = get_pkg(t)
     m = sys.modules[t.__module__]
     UInt32 = m.UInt32
 
     idx = dr.arange(UInt32, 8)
+    pages_a = lambda: [t(1, 2, 3, 4), t(5, 6, 7, 8)]
+    pages_b = lambda: [t(10, 20, 30, 40), t(5, 6, 7, 8)]
 
     # Primal
-    holder = pkg.DiffPagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    holder = pkg.DiffPagedHolderF32(pages_a(), 8, 4)
 
     @dr.freeze
     def primal(holder, idx):
@@ -746,52 +768,49 @@ def test26_diff_freeze_replay(t):
 
     r1 = primal(holder, idx)
     assert dr.all(dr.detach(r1) == m.ad.Float(1, 2, 3, 4, 5, 6, 7, 8))
-    holder.update_page(0, t(10, 20, 30, 40))
+    holder.rebind(pages_b(), 8, 4)
     r2 = primal(holder, idx)
     assert dr.all(dr.detach(r2) == m.ad.Float(10, 20, 30, 40, 5, 6, 7, 8))
     assert primal.n_recordings == 1
 
-    # VJP
-    holder2 = pkg.DiffPagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    # VJP of sum(y^2): gradient is 2 * primal, so a stale snapshot in the
+    # replayed backward pass would be detected
+    holder2 = pkg.DiffPagedHolderF32(pages_a(), 8, 4)
     holder2.enable_grad()
 
     @dr.freeze
-    def vjp(holder, idx, w):
-        holder.clear_grad()
+    def vjp(holder, idx):
+        holder.clear_gradient()
         y = pkg.gather_diff_holder(holder, idx)
-        dr.backward(dr.sum(y * w))
-        return holder.grad()
+        dr.backward(dr.sum(y * y))
+        return holder.gradient()
 
-    w = m.ad.Float([1, 2, 3, 4, 5, 6, 7, 8])
-    g1 = vjp(holder2, idx, w)
-    assert dr.all(g1 == t(1, 2, 3, 4, 5, 6, 7, 8))
-    holder2.update_page(1, t(50, 60, 70, 80))
-    # Reset the proxy gradient so that the AD state at entry matches the
-    # first call (a different entry state would legitimately retrace)
-    holder2.clear_grad()
-    g2 = vjp(holder2, idx, w)
-    assert dr.all(g2 == t(1, 2, 3, 4, 5, 6, 7, 8))
+    g1 = vjp(holder2, idx)
+    assert dr.all(g1 == t(2, 4, 6, 8, 10, 12, 14, 16))
+    holder2.rebind(pages_b(), 8, 4)
+    g2 = vjp(holder2, idx)
+    assert dr.all(g2 == t(20, 40, 60, 80, 10, 12, 14, 16))
     assert vjp.n_recordings == 1
 
-    # JVP
-    holder3 = pkg.DiffPagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    # JVP of y^2: dz = 2 * primal * tangent
+    holder3 = pkg.DiffPagedHolderF32(pages_a(), 8, 4)
     holder3.enable_grad()
 
     @dr.freeze
     def jvp(holder, idx, tangent):
-        holder.clear_grad()
-        holder.set_grad(tangent)
+        holder.clear_gradient()
+        holder.set_tangent(tangent)
         y = pkg.gather_diff_holder(holder, idx)
-        dr.forward_to(y)
-        return dr.grad(y)
+        z = y * y
+        dr.forward_to(z)
+        return dr.grad(z)
 
-    tangent = t([10, 20, 30, 40, 50, 60, 70, 80])
+    tangent = dr.full(t, 1.0, 8)
     d1 = jvp(holder3, idx, tangent)
-    assert dr.all(d1 == m.ad.Float(10, 20, 30, 40, 50, 60, 70, 80))
-    holder3.update_page(0, t(-1, -2, -3, -4))
-    holder3.clear_grad()
+    assert dr.all(d1 == m.ad.Float(2, 4, 6, 8, 10, 12, 14, 16))
+    holder3.rebind(pages_b(), 8, 4)
     d2 = jvp(holder3, idx, tangent)
-    assert dr.all(d2 == m.ad.Float(10, 20, 30, 40, 50, 60, 70, 80))
+    assert dr.all(d2 == m.ad.Float(20, 40, 60, 80, 10, 12, 14, 16))
     assert jvp.n_recordings == 1
 
 
@@ -821,3 +840,117 @@ def test27_scalar_index_snapshot(t):
 
     dr.eval(x0, x1)
     assert dr.all(x0 == t(4)) and dr.all(x1 == t(10))
+
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test28_diff_out_of_range(t):
+    # Out-of-range indices must be masked in the primal AND in both
+    # derivative directions: zero primal, zero JVP, no VJP contribution,
+    # and no invalid memory access
+    pkg = get_pkg(t)
+    m = sys.modules[t.__module__]
+    UInt32 = m.UInt32
+    Bool = dr.mask_t(t)
+
+    n = 8
+    idx = UInt32(0, n - 1, n, n + 100)
+
+    # Reverse mode
+    dv = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], n, 4)
+    dv.enable_grad()
+    y = pkg.gather_diff(dv, idx, dr.full(Bool, True, 4))
+    assert dr.all(dr.detach(y) == m.ad.Float(1, 8, 0, 0))
+
+    dr.backward(dr.sum(y * m.ad.Float(2, 3, 5, 7)))
+    assert dr.all(dv.gradient() == t(2, 0, 0, 0, 0, 0, 0, 3))
+
+    # Forward mode
+    dv2 = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], n, 4)
+    dv2.enable_grad()
+    dv2.set_tangent(dr.arange(t, n) + 10)
+    y2 = pkg.gather_diff(dv2, idx)
+    dr.forward_to(y2)
+    assert dr.all(dr.grad(y2) == m.ad.Float(10, 17, 0, 0))
+
+    # Explicitly masked valid indices contribute nothing either
+    dv3 = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], n, 4)
+    dv3.enable_grad()
+    y3 = pkg.gather_diff(dv3, UInt32(2, 5), Bool(True, False))
+    assert dr.all(dr.detach(y3) == m.ad.Float(3, 0))
+    dr.backward(dr.sum(y3 * m.ad.Float(1, 1)))
+    assert dr.all(dv3.gradient() == t(0, 0, 1, 0, 0, 0, 0, 0))
+
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test29_diff_proxy_semantics(t):
+    # The AD proxy is a derivative carrier: setting a tangent must not
+    # change primal reads, which always come from the paged snapshot
+    pkg = get_pkg(t)
+    m = sys.modules[t.__module__]
+    UInt32 = m.UInt32
+    import gc
+
+    dv = pkg.DiffPagedArrayViewF32([t(1, 2, 3, 4)], 4, 4)
+    dv.enable_grad()
+    dv.set_tangent(t(100, 200, 300, 400))
+
+    idx = dr.arange(UInt32, 4)
+    y = pkg.gather_diff(dv, idx)
+    assert dr.all(dr.detach(y) == m.ad.Float(1, 2, 3, 4))
+
+    # Empty differentiable view
+    dv_empty = pkg.DiffPagedArrayViewF32()
+    r = pkg.gather_diff(dv_empty, UInt32(0, 1), dr.mask_t(t)(False))
+    assert dr.all(dr.detach(r) == 0)
+
+    # A gather expression may outlive a temporary differentiable view
+    def make_and_gather():
+        tmp = pkg.DiffPagedArrayViewF32([t(7, 8), t(9, 10)], 4, 2)
+        tmp.enable_grad()
+        return pkg.gather_diff(tmp, dr.arange(UInt32, 4))
+
+    y2 = make_and_gather()
+    gc.collect()
+    for _ in range(4):
+        dr.eval(dr.full(t, 999.0, 2))
+    assert dr.all(dr.detach(y2) == m.ad.Float(7, 8, 9, 10))
+
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test30_diff_independent_views_shared_pages(t):
+    # Two views over the same physical pages have independent AD
+    # identities and independent gradients
+    pkg = get_pkg(t)
+    m = sys.modules[t.__module__]
+    UInt32 = m.UInt32
+
+    pages = [t(1, 2, 3, 4), t(5, 6, 7, 8)]
+    dv1 = pkg.DiffPagedArrayViewF32(pages, 8, 4)
+    dv2 = pkg.DiffPagedArrayViewF32(pages, 8, 4)
+    dv1.enable_grad()
+    dv2.enable_grad()
+
+    idx = UInt32(2, 6)
+    y1 = pkg.gather_diff(dv1, idx)
+    y2 = pkg.gather_diff(dv2, idx)
+
+    dr.backward(dr.sum(y1 * m.ad.Float(1, 1) + y2 * m.ad.Float(10, 10)))
+    assert dr.all(dv1.gradient() == t(0, 0, 1, 0, 0, 0, 1, 0))
+    assert dr.all(dv2.gradient() == t(0, 0, 10, 0, 0, 0, 10, 0))
+
+
+@pytest.test_arrays('float64,shape=(*),jit,-diff')
+def test31_diff_float64(t):
+    # float64 paged AD on backends that support it
+    pkg = get_pkg(t)
+    m = sys.modules[t.__module__]
+    UInt32 = m.UInt32
+
+    dv = pkg.DiffPagedArrayViewF64([t(1, 2, 3), t(4, 5)], 5, 3)
+    dv.enable_grad()
+
+    y = pkg.gather_diff(dv, UInt32(2, 3))
+    assert dr.all(dr.detach(y) == m.ad.Float64(3, 4))
+
+    dr.backward(dr.sum(y * y))
+    assert dr.all(dv.gradient() == t(0, 0, 6, 8, 0))
