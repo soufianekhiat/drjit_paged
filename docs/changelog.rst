@@ -21,6 +21,17 @@ DrJit 1.5.0 (unreleased)
   Dr.Jit's object traversal mechanism; replays rebind the pointer table
   instead of embedding stale addresses.
 
+- Added ``drjit::DiffPagedArrayView<T>`` (C++, ``drjit/paged.h``), a
+  differentiable counterpart that exposes paged primal storage as *one*
+  logical differentiable array. Reads via ``dr::gather()`` remain paged in
+  the primal, while forward-mode derivatives gather from a single logical
+  tangent and reverse-mode derivatives scatter-add into a single logical
+  gradient. Page boundaries and physical page sharing are therefore
+  invisible to automatic differentiation: interpolation across a page
+  boundary differentiates exactly like any other pair of adjacent indices,
+  and optimizers see one parameter of the logical width rather than
+  per-page variables.
+
 - Added :py:func:`dr.median() <median>`, which computes the median along one
   or more axes.
 
