@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 #if defined(_MSC_VER)
 #  define DRJIT_NOINLINE               __declspec(noinline)
@@ -245,6 +246,9 @@ template <typename Array_> struct Tensor;
 /// Generic texture type
 template <typename Value_, size_t Dimension_> class Texture;
 
+/// Read-only view of an array split into separately allocated pages
+template <typename Array_> class PagedArrayView;
+
 /// Helper class for custom data structures
 template <typename T>
 struct struct_support;
@@ -264,6 +268,14 @@ namespace detail {
     template <typename T> struct MaskedValue;
     template <typename T> struct MaskedArray;
     template <typename T> struct MaskBit;
+
+    template <typename T> struct is_paged_array_view : std::false_type { };
+    template <typename T>
+    struct is_paged_array_view<PagedArrayView<T>> : std::true_type { };
+
+    /// Is 'T' a drjit::PagedArrayView<...> instance?
+    template <typename T> constexpr bool is_paged_array_view_v =
+        is_paged_array_view<std::decay_t<T>>::value;
 }
 
 /// Enumeration to distinguish different types of primal/derivative computation

@@ -985,7 +985,11 @@ Target gather(Source &&source, const Index &index, const Mask &mask_ = true,
     // Broadcast mask to match shape of Index
     mask_t<plain_t<Index>> mask = mask_;
     DRJIT_MARK_USED(mask);
-    if constexpr (depth_v<Source> > 1) {
+    if constexpr (detail::is_paged_array_view_v<Source>) {
+        // Case 0: gather<FloatC>(const PagedArrayView<FloatC>&, ...)
+        // Read through a table of page pointers (see drjit/paged.h)
+        return source.template gather_<Target>(index, mask, mode);
+    } else if constexpr (depth_v<Source> > 1) {
         // Case 1: gather<Vector3fC>(const Vector3fC&, ...)
         static_assert(size_v<Source> == size_v<Target>,
                       "When gathering from a nested array source, the source "
