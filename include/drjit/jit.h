@@ -485,6 +485,29 @@ struct DRJIT_TRIVIAL_ABI JitArray
         }
     }
 
+    /**
+     * \brief Gather a value of this array's type through a pointer array
+     *
+     * In contrast to \ref gather_(), which reads from the storage of an
+     * existing array, this operation dereferences caller-provided (and
+     * potentially lane-varying) pointers, e.g. previously fetched from a
+     * page table (see drjit/paged.h). Dr.Jit cannot perform bounds or
+     * lifetime checks for such reads; the caller is responsible for
+     * guaranteeing that all pointers dereferenced by active lanes remain
+     * valid while the operation may execute.
+     */
+    template <typename Pointer, typename Index, typename Mask>
+    static JitArray gather_ptr_(const Pointer &pointer, const Index &index,
+                                const Mask &mask) {
+        static_assert(
+            std::is_same_v<detached_t<Mask>, detached_t<mask_t<JitArray>>>);
+        static_assert(Pointer::Type == VarType::Pointer,
+                      "gather_ptr_(): the 'pointer' argument must be a "
+                      "pointer-valued array (JitArray<Backend, void *>)!");
+        return steal(jit_var_gather_ptr(Type, pointer.index(), index.index(),
+                                        mask.index()));
+    }
+
     template <typename Index, typename Mask>
     void scatter_(JitArray &dst, const Index &index, const Mask &mask, ReduceMode mode) const {
         static_assert(
@@ -738,6 +761,11 @@ protected:
 template <typename Value> using CUDAArray = JitArray<JitBackend::CUDA, Value>;
 template <typename Value> using LLVMArray = JitArray<JitBackend::LLVM, Value>;
 template <typename Value> using MetalArray = JitArray<JitBackend::Metal, Value>;
+
+/// Array of machine pointers, e.g. the entries of a pointer table that is
+/// dereferenced via gather_ptr_() (see also drjit/paged.h)
+template <JitBackend Backend>
+using PointerArray = JitArray<Backend, void *>;
 
 template <typename T> T tile(const T &value, size_t count) {
     if constexpr (is_traversable_v<T>) {
