@@ -1,6 +1,7 @@
 [submodule "ext/drjit-core"]
     path = ext/drjit-core
-    url = https://github.com/mitsuba-renderer/drjit-core
+    url = https://github.com/soufianekhiat/drjit-core
+    branch = Paged
 [submodule "ext/nanobind"]
     path = ext/nanobind
     url = https://github.com/wjakob/nanobind
