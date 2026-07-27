@@ -42,6 +42,7 @@ add_drjit_test(custom_type_ext custom_type_ext.cpp)
 add_drjit_test(py_cpp_consistency_ext py_cpp_consistency_ext.cpp)
 add_drjit_test(local_ext local_ext.cpp)
 add_drjit_test(memop_ext memop_ext.cpp)
+add_drjit_test(paged_ext paged_ext.cpp)
 
 file(GLOB TEST_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "*.py")
 
