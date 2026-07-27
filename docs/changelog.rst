@@ -8,6 +8,19 @@ Changelog
 DrJit 1.5.0 (unreleased)
 ------------------------
 
+- Added ``drjit::PagedArrayView<T>`` (C++, ``drjit/paged.h``), a read-only
+  view that presents a sequence of independently allocated fixed-capacity
+  pages as one logical array accessed through the ordinary ``dr::gather()``
+  interface. Reads fetch the relevant page pointer from a small table and
+  dereference it via the new ``jit_var_gather_ptr()`` core operation. The
+  generated kernels are independent of the page count, and pages can be
+  shared between views or replaced without recompilation. Each pointer
+  table retains the pages whose addresses it stores, so pending gather
+  expressions stay valid across view destruction or page replacement.
+  Paged views can also participate in :py:func:`dr.freeze() <freeze>` via
+  Dr.Jit's object traversal mechanism; replays rebind the pointer table
+  instead of embedding stale addresses.
+
 - Added :py:func:`dr.median() <median>`, which computes the median along one
   or more axes.
 
