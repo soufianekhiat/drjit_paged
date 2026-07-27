@@ -954,3 +954,70 @@ def test31_diff_float64(t):
 
     dr.backward(dr.sum(y * y))
     assert dr.all(dv.gradient() == t(0, 0, 6, 8, 0))
+
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test32_freeze_structural_rebind_guard(t):
+    # Rebinding a differentiable holder must reject changes to the paging
+    # structure: the recorded kernels bake bounds and page/offset
+    # arithmetic derived from logical_size and page_size
+    pkg = get_pkg(t)
+
+    holder = pkg.DiffPagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+
+    with pytest.raises(RuntimeError, match='page size cannot change'):
+        holder.rebind([t(1, 2, 3, 4, 5), t(6, 7, 8)], 8, 5)
+
+    with pytest.raises(RuntimeError, match='logical size cannot change'):
+        holder.rebind([t(1, 2, 3, 4), t(5, 6, 7, 8), t(9, 10, 11, 12)], 12, 4)
+
+    # Structurally compatible rebinding remains legal
+    holder.rebind([t(10, 20, 30, 40), t(50, 60, 70, 80)], 8, 4)
+    assert holder.size() == 8
+
+
+@pytest.test_arrays('float32,shape=(*),jit,-diff')
+def test33_freeze_structural_recordings(t):
+    # Holders with the same traversed variable widths but a different
+    # paging structure must produce distinct frozen recordings; replaying
+    # a kernel recorded for another structure would compute wrong pages,
+    # offsets, and bounds
+    pkg = get_pkg(t)
+    m = sys.modules[t.__module__]
+    UInt32 = m.UInt32
+
+    idx = dr.arange(UInt32, 8)
+
+    # Same page-table width (2), different logical size (8 vs 7). Without
+    # a structural key, the second call would replay the size-8 bounds
+    # check and read past the shorter final page.
+    holder_a = pkg.PagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    holder_b = pkg.PagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7)], 7, 4)
+
+    @dr.freeze
+    def func(holder, idx):
+        return pkg.gather_holder(holder, idx)
+
+    ra = func(holder_a, idx)
+    assert dr.all(ra == t(1, 2, 3, 4, 5, 6, 7, 8))
+
+    rb = func(holder_b, idx)
+    assert dr.all(rb == t(1, 2, 3, 4, 5, 6, 7, 0))
+    assert func.n_recordings == 2
+
+    # Same logical size (8), same table width (2), same proxy width (8),
+    # different page size (4 vs 5). Only the structure guard separates
+    # these; a replay with the wrong shift/mask would reorder the values.
+    dh_a = pkg.DiffPagedHolderF32([t(1, 2, 3, 4), t(5, 6, 7, 8)], 8, 4)
+    dh_b = pkg.DiffPagedHolderF32([t(1, 2, 3, 4, 5), t(6, 7, 8)], 8, 5)
+
+    @dr.freeze
+    def dfunc(holder, idx):
+        return pkg.gather_diff_holder(holder, idx)
+
+    da = dfunc(dh_a, idx)
+    assert dr.all(dr.detach(da) == m.ad.Float(1, 2, 3, 4, 5, 6, 7, 8))
+
+    db = dfunc(dh_b, idx)
+    assert dr.all(dr.detach(db) == m.ad.Float(1, 2, 3, 4, 5, 6, 7, 8))
+    assert dfunc.n_recordings == 2

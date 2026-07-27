@@ -418,6 +418,17 @@ private:
  *    Compiled kernels are still reused across snapshots, since page
  *    addresses remain runtime inputs.
  *
+ * 3. When integrating with function freezing (dr.freeze), recordings must
+ *    be keyed on the paging *structure*: generated kernels bake the
+ *    bounds and page/offset arithmetic derived from logical_size and
+ *    page_size, while page addresses and contents remain runtime inputs.
+ *    Traversable wrappers should reject structural changes on snapshot
+ *    rebinding, and additionally contribute structure-dependent variables
+ *    to the traversed layout (e.g. literal zeros whose widths encode the
+ *    page size and the final page length; variable widths are always part
+ *    of the frozen input layout). See the holders in tests/paged_ext.cpp
+ *    for the reference pattern.
+ *
  * Tangents and gradients use contiguous storage of the logical width; only
  * the primal is paged. Derivative propagation never reads the pages, so
  * gradients always correspond to the snapshot that produced the primal.
