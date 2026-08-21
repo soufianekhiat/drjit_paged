@@ -326,6 +326,22 @@ public:
             Index index(index_);
             Mask valid = Mask(mask_) && (index < Index((uint32_t) m_size));
 
+            /* A single-page view is contiguous, and the page-table
+               indirection must be skipped rather than merely wasted: a
+               gather from a size-1 pointer table is elided by
+               jitc_var_gather() into and(pointer, mask), whose LLVM
+               lowering emits a 'select' typed from the type table (i64)
+               against a pointer variable defined as an opaque 'ptr'
+               vector -- the kernel then fails to parse and Dr.Jit shuts
+               the process down. Routing it through a real gather node
+               instead is no better: a pointer-typed gather result
+               crossing a symbolic call boundary is double-emitted by the
+               call machinery. Gathering from the page directly sidesteps
+               the pointer round trip entirely and is the ordinary,
+               well-exercised data gather. */
+            if (m_pages.size() == 1)
+                return drjit::gather<Target>(m_pages[0], index, valid, mode);
+
             Index page, offset;
             if (m_power_of_two) {
                 page   = index >> m_page_shift;
